@@ -4,7 +4,6 @@
 import 'dart:typed_data';
 
 import '../../factory/otel_factory.dart';
-import '../../util/otel_error_handler.dart';
 import '../baggage/baggage.dart';
 import '../baggage/baggage_entry.dart';
 import '../common/any_value.dart';
@@ -176,16 +175,7 @@ class OTelAPIFactory extends OTelFactory {
         return;
       }
 
-      // Reporting outside the catch: a user handler may rethrow (strict mode),
-      // and catching that here would report the same value twice.
-      final AnyValue anyValue;
-      try {
-        anyValue = AnyValue.fromObject(value);
-      } catch (e) {
-        OTelErrorHandling.report(ArgumentError(
-            'Ignoring attribute "$key" because it contains unsupported types: $e'));
-        return;
-      }
+      final anyValue = AnyValue.fromObject(value);
 
       attributes.add(AttributeCreate.create(key, anyValue));
     });

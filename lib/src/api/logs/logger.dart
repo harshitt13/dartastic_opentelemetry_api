@@ -110,13 +110,6 @@ class APILogger {
     // record. AnyValue.fromObject does this too, at every depth; this is the
     // same rule applied one call earlier for the common top-level case.
     if (body is AnyValue) return body;
-    try {
-      return AnyValue.fromObject(body);
-    } catch (e) {
-      OTelErrorHandling.report(ArgumentError(
-          'Dropping the log record body because it contains unsupported '
-          'types: $e'));
-      return null;
-    }
+    return AnyValue.fromObject(body);
   }
 }
