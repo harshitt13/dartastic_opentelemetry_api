@@ -67,7 +67,7 @@ class APILogger {
   ///
   /// This implementation does nothing at all, per logs/noop.md: the No-Op
   /// Logger accepts the parameters and neither validates them nor records
-  /// anything. It deliberately does not convert [body] — no record is produced
+  /// anything. It deliberately does not convert [body], as no record is produced
   /// without an SDK, so there is nothing for an unrepresentable body to
   /// corrupt, and traversing it would charge users who installed no SDK for
   /// work whose result is discarded. An SDK reports the unrepresentable body,
@@ -94,16 +94,14 @@ class APILogger {
   /// [LogRecord.body] can be forwarded to [emit] without being re-wrapped.
   /// Anything else is converted by [AnyValue.fromObject].
   ///
-  /// Returns null when [body] is null or cannot be represented. A value the
-  /// data model cannot carry is reported through [OTelErrorHandling] and the
-  /// body dropped, never thrown: error-handling.md makes throwing on end-user
-  /// misuse a MUST NOT, and failing telemetry must not take down the caller's
-  /// logging path. This mirrors what `attrsFromMap` does for attributes.
+  /// Anything [AnyValue.fromObject] cannot convert is reported through
+  /// [OTelErrorHandling] and becomes [AnyValueNull]. Returns null only when
+  /// [body] is null.
   ///
   /// Static, not an instance method: SDK loggers `implement` [APILogger] and
   /// delegate rather than extending it, so an instance member would oblige
-  /// every one of them to supply its own implementation — the opposite of
-  /// sharing this one. Call it as `APILogger.bodyToAnyValue(body)`.
+  /// every one of them to supply its own implementation (the opposite of
+  /// sharing this one). Call it as `APILogger.bodyToAnyValue(body)`.
   static AnyValue? bodyToAnyValue(Object? body) {
     if (body == null) return null;
     // Already boxed: emit(body: record.body) is the natural way to forward a

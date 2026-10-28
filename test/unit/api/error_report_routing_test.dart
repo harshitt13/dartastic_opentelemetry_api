@@ -71,8 +71,8 @@ void main() {
     test('a heterogeneous list is stored, not reported', () {
       // [1, 'two'] converts cleanly to an AnyValueArray. common.md defines an
       // attribute value as any AnyValue type, so this is legal and nothing is
-      // reported. Only a value AnyValue cannot represent at all is dropped,
-      // which the two tests above cover.
+      // reported. A value AnyValue cannot represent at all becomes AnyValueNull,
+      // which the test above covers.
       final attrs = Attributes.of({
         'mixed': [1, 'two']
       });

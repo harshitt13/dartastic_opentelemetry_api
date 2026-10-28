@@ -24,8 +24,9 @@ class Attributes {
   /// Uses the appropriate factory method (OTelFactory or OTelAPIFactory) based on initialization state.
   ///
   /// Values may be anything [AnyValue.fromObject] converts: a primitive, a
-  /// list, a map, a `Uint8List`, a `DateTime`, or null. A value it cannot
-  /// convert is dropped and reported via [OTelErrorHandling].
+  /// list, a map, a `Uint8List`, a `DateTime`, or null. Other types are
+  /// converted via `toString()`; if `toString()` throws, the failure is
+  /// reported via [OTelErrorHandling] and stored as [AnyValueNull].
   ///
   /// @param map The map of key-value pairs to convert to attributes
   /// @return A new Attributes instance containing the converted attributes
@@ -36,9 +37,9 @@ class Attributes {
   /// Creates an Attributes instance from a JSON map.
   /// This is a utility method for deserialization from logs or exports.
   ///
-  /// A value that cannot be converted is dropped and reported via
-  /// [OTelErrorHandling]. Maps, nested arrays and null convert fine and are
-  /// stored, per common.md's Attribute definition.
+  /// Values that cannot be converted are reported via [OTelErrorHandling]
+  /// and stored as [AnyValueNull]. Maps, nested arrays and null convert fine
+  /// and are stored, per common.md's Attribute definition.
   static Attributes fromJson(Map<String, dynamic> json) {
     final attributes = <Attribute>[];
 
@@ -138,6 +139,7 @@ class Attributes {
     if (attribute == null) return null;
 
     final anyValue = attribute.value;
+    if (anyValue is AnyValueNull) return null;
 
     if (T == String && anyValue is AnyValueString) {
       return anyValue.value as T;
@@ -350,7 +352,11 @@ class Attributes {
 
   @override
   String toString() {
-    return const JsonEncoder.withIndent('  ').convert(toJson());
+    try {
+      return const JsonEncoder.withIndent('  ').convert(toJson());
+    } catch (_) {
+      return '{${_entries.entries.map((e) => '${e.key}: ${e.value.value}').join(', ')}}';
+    }
   }
 
   /// Converts the attributes to a JSON-serializable map.

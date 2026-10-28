@@ -164,9 +164,9 @@ class OTelAPIFactory extends OTelFactory {
   /// nested array, a byte array and null are all stored. Empty Strings and
   /// empty lists are stored too.
   ///
-  /// A value [AnyValue.fromObject] cannot convert at all — a closure, a domain
-  /// object — is dropped and reported via `OTelErrorHandling` rather than
-  /// being stringified.
+  /// Other types (like domain objects) are converted using `toString()`. If
+  /// `toString()` throws, the failure is reported via `OTelErrorHandling` and
+  /// stored as [AnyValueNull].
   static Attributes attrsFromMap(Map<String, Object?> namedMap) {
     final attributes = <Attribute>[];
     namedMap.forEach((key, value) {

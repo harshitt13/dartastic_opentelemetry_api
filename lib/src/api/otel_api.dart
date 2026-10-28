@@ -538,8 +538,9 @@ class OTelAPI {
   /// DateTime is converted to a UTC time String, and `Attribute` values pass
   /// through as-is.
   ///
-  /// A value that cannot be converted is dropped and reported through the
-  /// error handler; there is no `toString()` fallback.
+  /// Other types are converted via `toString()`. If `toString()` throws, the
+  /// failure is reported through the error handler and the value becomes
+  /// [AnyValueNull].
   static Attributes attributesFromMap(Map<String, Object?> namedMap) {
     _getAndCacheOtelFactory();
     return OTelFactory.otelFactory!.attributesFromMap(namedMap);

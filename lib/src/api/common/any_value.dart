@@ -30,11 +30,12 @@ sealed class AnyValue {
   /// with every nested [AnyValue] unwrapped in turn. Bytes are returned as the
   /// raw `List<int>`.
   ///
-  /// Throws an [ArgumentError] if the value nests more than 32 levels deep.
+  /// Reports via [OTelErrorHandling] and returns null if the value nests more
+  /// than 32 levels deep.
   Object? unwrap() => _unwrap(0);
 
   Object? _unwrap(int depth) {
-    if (depth >= _maxDepth) {
+    if (depth >= _maxDepth && this is! AnyValueNull) {
       OTelErrorHandling.report(ArgumentError(
           'AnyValue nesting exceeds the maximum depth of $_maxDepth'));
       return null;
@@ -53,19 +54,15 @@ sealed class AnyValue {
     };
   }
 
-  /// Implements JSON serialization, as plain Dart objects.
+  /// Converts this value to plain Dart objects for debugging and in-process use.
   ///
-  /// This is [unwrap]: every type, bytes included, has the same representation
-  /// in both, and `List<int>` is JSON-encodable as it stands. This is **not**
-  /// the OTLP/JSON wire encoding, which is tagged — `{"intValue": "1"}`, with
-  /// int64 as a String — and is produced by the SDK's exporters from the
-  /// protobuf model, not here.
+  /// This delegates to [unwrap].
   Object? toJson() => unwrap();
 
   /// A readable rendering of this value, for debuggers and error messages.
   ///
   /// Bounded in both directions, because `toString` runs in exactly the places
-  /// — a debugger, an error message — where an exception or a megabyte of
+  /// (a debugger, an error message) where an exception or a megabyte of
   /// output is least welcome. Unlike [unwrap] it never throws: nesting past 32
   /// levels renders as `...`. Bytes render as `<N bytes>` rather than their
   /// contents, since the length is what you want when debugging and the
@@ -114,7 +111,21 @@ sealed class AnyValue {
   factory AnyValue.fromMap(Map<String, AnyValue> value) = AnyValueMap;
 
   /// Creates an AnyValue from a byte array.
-  factory AnyValue.fromBytes(List<int> value) = AnyValueBytes;
+  ///
+  /// Every element must be in the range 0-255. If an element is out of range,
+  /// the error is reported via [OTelErrorHandling] and [AnyValueNull] is returned.
+  factory AnyValue.fromBytes(List<int> value) {
+    if (value is! Uint8List) {
+      for (final byte in value) {
+        if (byte < 0 || byte > 255) {
+          OTelErrorHandling.report(ArgumentError(
+              'AnyValue.fromBytes elements must be in the range 0-255; using an empty value.'));
+          return const AnyValueNull();
+        }
+      }
+    }
+    return AnyValueBytes(value);
+  }
 
   /// Creates the null AnyValue.
   factory AnyValue.nullValue() = AnyValueNull;
@@ -126,10 +137,12 @@ sealed class AnyValue {
   /// - `null` becomes [AnyValueNull]. String, bool, int and double become the
   ///   matching leaf.
   /// - [Uint8List] becomes [AnyValueBytes] ("Byte Sequences").
-  /// - Any other [List] becomes an [AnyValueArray] with each element converted
-  ///   by these same rules ("Array Values"). Elements need not share a type,
-  ///   and `null` elements are kept, per "an array of AnyValue" and the `null`
-  ///   rule in common/README.md.
+  /// - Any other [Iterable] (such as [List] or [Set]) becomes an
+  ///   [AnyValueArray] with each element converted by these same rules
+  ///   ("Array Values"). Elements need not share a type, and `null` elements
+  ///   are kept, per "an array of AnyValue" and the `null` rule in
+  ///   common/README.md. Infinite iterables will not terminate, so callers
+  ///   must pass finite collections.
   /// - A [Map] becomes an [AnyValueMap] ("Associative Arrays With Unique
   ///   Keys"). A non-String key is converted with `toString()`; if that throws,
   ///   the entry is skipped. Key collisions after stringification are reported.
@@ -137,16 +150,25 @@ sealed class AnyValue {
   ///   `toUtc().toIso8601String()`. The specification has no rule for dates,
   ///   so this is "Other Values" with a fixed format instead of
   ///   [DateTime.toString].
+  /// - An [Enum] becomes an [AnyValueString] using its symbolic name ([Enum.name]).
   /// - An [AnyValue] is returned as is.
   /// - Anything else becomes a String via `toString()` ("Other Values"). If
   ///   `toString()` throws, the failure is reported through
   ///   [OTelErrorHandling] and the result is [AnyValueNull].
   ///
-  /// Never throws. Nesting deeper than 32 levels is reported through
-  /// [OTelErrorHandling] and that subtree becomes [AnyValueNull].
-  factory AnyValue.fromObject(Object? obj) => _fromObject(obj, 0);
+  /// Never throws. Nesting deeper than 32 levels or cyclic collection
+  /// references are reported through [OTelErrorHandling] and that subtree
+  /// becomes [AnyValueNull].
+  factory AnyValue.fromObject(Object? obj) =>
+      _fromObject(obj, 0, HashSet<Object>.identity());
 
-  static AnyValue _fromObject(Object? obj, int depth) {
+  static AnyValue _cycle() {
+    OTelErrorHandling.report(ArgumentError(
+        'AnyValue input contains a cycle; using an empty value.'));
+    return const AnyValueNull();
+  }
+
+  static AnyValue _fromObject(Object? obj, int depth, Set<Object> path) {
     if (depth >= _maxDepth) {
       OTelErrorHandling.report(ArgumentError(
           'AnyValue nesting exceeds the maximum depth of $_maxDepth'));
@@ -177,32 +199,53 @@ sealed class AnyValue {
       // Must precede the List check: Uint8List implements List<int>, so it
       // would otherwise become an array of AnyValueInt.
       return AnyValueBytes(obj);
-    } else if (obj is List) {
-      return AnyValueArray(obj.map((e) => _fromObject(e, depth + 1)).toList());
-    } else if (obj is Map) {
-      final map = <String, AnyValue>{};
-      for (final entry in obj.entries) {
-        final keyObj = entry.key;
-        final String key;
-        if (keyObj is! String) {
-          final str = OTelErrorHandling.safeToString(keyObj);
-          if (str == null) {
-            OTelErrorHandling.report(ArgumentError(
-                'toString() threw while converting a ${keyObj.runtimeType} map '
-                'key to a String; skipping entry.'));
-            continue;
-          }
-          key = str;
-        } else {
-          key = keyObj;
-        }
-        if (map.containsKey(key)) {
-          OTelErrorHandling.report(ArgumentError(
-              'AnyValue map key collision after stringification: $key'));
-        }
-        map[key] = _fromObject(entry.value, depth + 1);
+    } else if (obj is Iterable) {
+      if (!path.add(obj)) return _cycle();
+      try {
+        return AnyValueArray(
+            obj.map((e) => _fromObject(e, depth + 1, path)).toList());
+      } catch (_) {
+        OTelErrorHandling.report(ArgumentError(
+            'Iteration threw while converting an Iterable to an AnyValue; using an empty value.'));
+        return const AnyValueNull();
+      } finally {
+        path.remove(obj);
       }
-      return AnyValueMap(map);
+    } else if (obj is Map) {
+      if (!path.add(obj)) return _cycle();
+      try {
+        final map = <String, AnyValue>{};
+        for (final entry in obj.entries) {
+          final keyObj = entry.key;
+          final String key;
+          if (keyObj is! String) {
+            final str = OTelErrorHandling.safeToString(keyObj);
+            if (str == null) {
+              OTelErrorHandling.report(
+                  ArgumentError('toString() threw while converting a map '
+                      'key to a String; skipping entry.'));
+              continue;
+            }
+            key = str;
+          } else {
+            key = keyObj;
+          }
+          if (map.containsKey(key)) {
+            OTelErrorHandling.report(ArgumentError(
+                'AnyValue map key collision after stringification: $key'));
+          }
+          map[key] = _fromObject(entry.value, depth + 1, path);
+        }
+        return AnyValueMap(map);
+      } catch (_) {
+        OTelErrorHandling.report(ArgumentError(
+            'Iteration threw while converting a Map to an AnyValue; using an empty value.'));
+        return const AnyValueNull();
+      } finally {
+        path.remove(obj);
+      }
+    } else if (obj is Enum) {
+      return AnyValueString(obj.name);
     } else {
       // "Mapping Arbitrary Data to OTLP AnyValue", Other Values: anything not
       // listed above SHOULD be converted to a string via toString(), and to an
@@ -216,9 +259,9 @@ sealed class AnyValue {
         // A user-defined toString() can throw. error-handling.md: report it,
         // never propagate, and fall through to the empty value the mapping
         // doc prescribes as the last resort.
-        OTelErrorHandling.report(ArgumentError(
-            'toString() threw while converting a ${obj.runtimeType} to an '
-            'AnyValue; using an empty value instead.'));
+        OTelErrorHandling.report(
+            ArgumentError('toString() threw while converting an object to an '
+                'AnyValue; using an empty value instead.'));
         return const AnyValueNull();
       }
     }
@@ -372,11 +415,9 @@ class AnyValueBytes extends AnyValue {
 
   /// Creates an AnyValue holding a defensive, unmodifiable copy of [value].
   ///
-  /// The copy is required because [AnyValue] is value-equal and is used as a
-  /// key by [Attributes]; sharing the caller's list would let a later mutation
-  /// change this value's `hashCode`.
-  ///
-  /// Throws an [ArgumentError] if any element falls outside the range 0-255.
+  /// Throws an [ArgumentError] for an element outside 0-255. Intended for data
+  /// you already know is valid; use [AnyValue.fromBytes] for untrusted input,
+  /// which reports and returns [AnyValueNull].
   AnyValueBytes(List<int> value) : value = _asBytes(value);
 
   static List<int> _asBytes(List<int> value) {

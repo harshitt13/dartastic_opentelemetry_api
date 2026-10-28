@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:collection';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dartastic_opentelemetry_api/src/api/common/any_value.dart';
@@ -193,24 +195,41 @@ void main() {
       test('an out-of-range positive element is rejected, not masked', () {
         // Uint8List.fromList would silently store 44 here.
         expect(() => AnyValueBytes([1, 300]), throwsA(isA<ArgumentError>()));
-        expect(() => AnyValue.fromBytes([256]), throwsA(isA<ArgumentError>()));
       });
 
-      test('a negative element is rejected', () {
+      test('a negative element is rejected by constructor', () {
         expect(() => AnyValueBytes([-1]), throwsA(isA<ArgumentError>()));
+      });
+
+      test(
+          'fromBytes rejects out-of-range elements with a report and returns AnyValueNull',
+          () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final result256 = AnyValue.fromBytes([256]);
+        expect(result256, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.first, isA<ArgumentError>());
+
+        final resultNeg = AnyValue.fromBytes([-1]);
+        expect(resultNeg, isA<AnyValueNull>());
+        expect(reported, hasLength(2));
+        expect(reported.last, isA<ArgumentError>());
       });
 
       test('the boundary values 0 and 255 are accepted', () {
         expect(AnyValueBytes([0, 255]).value, equals([0, 255]));
+        expect(AnyValue.fromBytes([0, 255]), isA<AnyValueBytes>());
       });
 
       test('a Uint8List is accepted without scanning', () {
         final value = AnyValueBytes(Uint8List.fromList([0, 128, 255]));
         expect(value.value, equals([0, 128, 255]));
-      });
-
-      test('the fromBytes factory rejects out-of-range elements', () {
-        expect(() => AnyValue.fromBytes([999]), throwsA(isA<ArgumentError>()));
+        final fromBytesVal =
+            AnyValue.fromBytes(Uint8List.fromList([0, 128, 255]));
+        expect(fromBytesVal, isA<AnyValueBytes>());
       });
 
       // An out-of-range list cannot reach AnyValueBytes through Attributes.of:
@@ -508,10 +527,386 @@ void main() {
         expect((doubleList.value as AnyValueArray).value, isEmpty);
       });
     });
+
+    group('AnyValue cycle and breadth protection (Item 1)', () {
+      test('self-containing list twice finishes without hang and reports twice',
+          timeout: const Timeout(Duration(seconds: 5)), () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final l = <Object?>[];
+        l
+          ..add(l)
+          ..add(l);
+        expect(() => Attributes.of({'x': l}), returnsNormally);
+        expect(reported, hasLength(2));
+        expect(reported[0], isA<ArgumentError>());
+        expect(reported[1], isA<ArgumentError>());
+      });
+
+      test('map containing itself finishes without hang and reports once',
+          timeout: const Timeout(Duration(seconds: 5)), () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final m = <String, Object?>{};
+        m['self'] = m;
+        expect(() => Attributes.of(m), returnsNormally);
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('mutual cycle a -> b -> a reports once and does not hang',
+          timeout: const Timeout(Duration(seconds: 5)), () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final a = <Object?>[];
+        final b = <Object?>[];
+        a.add(b);
+        b.add(a);
+
+        expect(() => Attributes.of({'k': a}), returnsNormally);
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('shared non-cyclic child [child, child] gives no report', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final child = ['a', 'b'];
+        final list = [child, child];
+
+        expect(() => Attributes.of({'k': list}), returnsNormally);
+        expect(reported, isEmpty);
+      });
+
+      test('depth 33 nesting still gives exactly one report', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        Object current = 'leaf';
+        for (var i = 1; i < 33; i++) {
+          current = <Object>[current];
+        }
+
+        expect(() => Attributes.of({'k': current}), returnsNormally);
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+    });
+
+    group('AnyValue _unwrap depth guard re-report fix (Item 2)', () {
+      test(
+          'Attributes.of nested(33) then create + toJson + toString + toJson produces 1 report in total',
+          () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        Object current = 'leaf';
+        for (var i = 1; i < 33; i++) {
+          current = <Object>[current];
+        }
+
+        final attrs = Attributes.of({'deep': current});
+        expect(reported, hasLength(1));
+
+        attrs.toJson();
+        expect(reported, hasLength(1));
+
+        attrs.toString();
+        expect(reported, hasLength(1));
+
+        attrs.toJson();
+        expect(reported, hasLength(1));
+      });
+    });
+
+    group('Iterable and Set support (Item 5)', () {
+      test('Set becomes AnyValueArray', () {
+        final result = AnyValue.fromObject({'a', 'b'});
+        expect(result, isA<AnyValueArray>());
+        expect((result as AnyValueArray).value.map((e) => e.unwrap()).toSet(),
+            equals({'a', 'b'}));
+      });
+
+      test('lazy map(...) iterable becomes AnyValueArray', () {
+        final result = AnyValue.fromObject([1, 2].map((e) => e * 2));
+        expect(result, isA<AnyValueArray>());
+        expect((result as AnyValueArray).value.map((e) => e.unwrap()).toList(),
+            equals([2, 4]));
+      });
+
+      test('nested Set inside a Map becomes AnyValueArray', () {
+        final result = AnyValue.fromObject({
+          's': {1, 2}
+        });
+        expect(result, isA<AnyValueMap>());
+        final map = result as AnyValueMap;
+        expect(map.value['s'], isA<AnyValueArray>());
+        expect(
+            (map.value['s'] as AnyValueArray)
+                .value
+                .map((e) => e.unwrap())
+                .toSet(),
+            equals({1, 2}));
+      });
+
+      test('empty Set becomes empty AnyValueArray', () {
+        final result = AnyValue.fromObject(<String>{});
+        expect(result, isA<AnyValueArray>());
+        expect((result as AnyValueArray).value, isEmpty);
+      });
+
+      test('Uint8List still gives AnyValueBytes', () {
+        final bytes = Uint8List.fromList([1, 2, 3]);
+        final result = AnyValue.fromObject(bytes);
+        expect(result, isA<AnyValueBytes>());
+        expect((result as AnyValueBytes).value, equals([1, 2, 3]));
+      });
+
+      test('String still gives AnyValueString', () {
+        final result = AnyValue.fromObject('hello');
+        expect(result, isA<AnyValueString>());
+        expect((result as AnyValueString).value, equals('hello'));
+      });
+
+      test('Map still gives AnyValueMap', () {
+        final result = AnyValue.fromObject({'k': 'v'});
+        expect(result, isA<AnyValueMap>());
+        expect((result as AnyValueMap).value['k']?.unwrap(), equals('v'));
+      });
+
+      test('sync* generator that throws returns AnyValueNull and reports once',
+          () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        Iterable<int> throwingGen() sync* {
+          yield 1;
+          throw StateError('generator failed');
+        }
+
+        final result = AnyValue.fromObject(throwingGen());
+        expect(result, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('throwing sync* generator nested inside a list', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        Iterable<int> throwingGen() sync* {
+          yield 1;
+          throw StateError('generator failed');
+        }
+
+        final result = AnyValue.fromObject([throwingGen()]);
+        expect(result, isA<AnyValueArray>());
+        expect((result as AnyValueArray).value.single, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('throwing sync* generator nested inside a map', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        Iterable<int> throwingGen() sync* {
+          yield 1;
+          throw StateError('generator failed');
+        }
+
+        final result = AnyValue.fromObject({'k': throwingGen()});
+        expect(result, isA<AnyValueMap>());
+        expect((result as AnyValueMap).value['k'], isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test(
+          'an iterable whose own toString throws still reports without breaking',
+          () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final result = AnyValue.fromObject(_ThrowingIterable());
+        expect(result, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('a Map whose iteration throws returns AnyValueNull and reports once',
+          () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final result = AnyValue.fromObject(_ThrowingMap());
+        expect(result, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+    });
+
+    group('Enum symbolic name conversion (Item 6)', () {
+      test('plain enum uses its symbolic name', () {
+        final result = AnyValue.fromObject(_PlainEnum.first);
+        expect(result, isA<AnyValueString>());
+        expect((result as AnyValueString).value, equals('first'));
+      });
+
+      test('enhanced enum uses its symbolic name', () {
+        final result = AnyValue.fromObject(_EnhancedEnum.alpha);
+        expect(result, isA<AnyValueString>());
+        expect((result as AnyValueString).value, equals('alpha'));
+      });
+
+      test('enum inside a list converts to AnyValueString', () {
+        final result = AnyValue.fromObject([_PlainEnum.second]);
+        expect(result, isA<AnyValueArray>());
+        final arr = result as AnyValueArray;
+        expect(arr.value.first, isA<AnyValueString>());
+        expect((arr.value.first as AnyValueString).value, equals('second'));
+      });
+
+      test('enum inside a map converts to AnyValueString', () {
+        final result = AnyValue.fromObject({'e': _EnhancedEnum.beta});
+        expect(result, isA<AnyValueMap>());
+        final map = result as AnyValueMap;
+        expect(map.value['e'], isA<AnyValueString>());
+        expect((map.value['e'] as AnyValueString).value, equals('beta'));
+      });
+    });
+
+    group('Typed getters quiet on null attributes (Item 7)', () {
+      test('null attribute returns null quietly for all typed getters', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final attrs = Attributes.of({'k': null});
+
+        expect(attrs.getString('k'), isNull);
+        expect(attrs.getInt('k'), isNull);
+        expect(attrs.getBool('k'), isNull);
+        expect(attrs.getDouble('k'), isNull);
+        expect(attrs.getStringList('k'), isNull);
+        expect(attrs.getBoolList('k'), isNull);
+        expect(attrs.getIntList('k'), isNull);
+        expect(attrs.getDoubleList('k'), isNull);
+
+        expect(reported, isEmpty);
+      });
+
+      test('real type mismatch on a map still reports once', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final attrs = Attributes.of({
+          'm': {'nested': true}
+        });
+
+        expect(attrs.getString('m'), isNull);
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<StateError>());
+      });
+    });
+
+    group('Attributes.toString never throws on NaN/Infinity (Item 8)', () {
+      test(
+          'Attributes.toString renders NaN, Infinity, -Infinity without throwing',
+          () {
+        final nanAttr = Attributes.of({'a': double.nan});
+        expect(nanAttr.toString, returnsNormally);
+        expect(nanAttr.toString(), contains('NaN'));
+
+        final posInfAttr = Attributes.of({'b': double.infinity});
+        expect(posInfAttr.toString, returnsNormally);
+        expect(posInfAttr.toString(), contains('Infinity'));
+
+        final negInfAttr = Attributes.of({'c': double.negativeInfinity});
+        expect(negInfAttr.toString, returnsNormally);
+        expect(negInfAttr.toString(), contains('-Infinity'));
+
+        final mapWithNan = Attributes.of({
+          'm': {'nested': double.nan}
+        });
+        expect(mapWithNan.toString, returnsNormally);
+        expect(mapWithNan.toString(), contains('NaN'));
+
+        final listWithInf = Attributes.of({
+          'l': [double.infinity, double.negativeInfinity]
+        });
+        expect(listWithInf.toString, returnsNormally);
+        expect(listWithInf.toString(), contains('Infinity'));
+        expect(listWithInf.toString(), contains('-Infinity'));
+      });
+
+      test(
+          'a normal attribute map still renders as JSON via the non-fallback path',
+          () {
+        final attrs = Attributes.of({
+          'a': 'hello',
+          'b': 42,
+          'c': true,
+        });
+        final str = attrs.toString();
+        expect(() => jsonDecode(str), returnsNormally);
+        final decoded = jsonDecode(str) as Map<String, dynamic>;
+        expect(decoded['a'], equals('hello'));
+        expect(decoded['b'], equals(42));
+        expect(decoded['c'], equals(true));
+      });
+    });
   });
+}
+
+enum _PlainEnum { first, second }
+
+enum _EnhancedEnum {
+  alpha('A'),
+  beta('B');
+
+  final String label;
+  const _EnhancedEnum(this.label);
 }
 
 class _ThrowingToString {
   @override
   String toString() => throw StateError('user toString threw');
+}
+
+class _ThrowingIterable extends Iterable<int> {
+  @override
+  Iterator<int> get iterator => throw StateError('iterator error');
+
+  @override
+  String toString() => throw StateError('toString error');
+}
+
+class _ThrowingMap extends MapBase<String, Object?> {
+  @override
+  Iterable<String> get keys => throw StateError('map iteration error');
+  @override
+  Object? operator [](Object? key) => null;
+  @override
+  void operator []=(String key, Object? value) {}
+  @override
+  void clear() {}
+  @override
+  Object? remove(Object? key) => null;
 }
