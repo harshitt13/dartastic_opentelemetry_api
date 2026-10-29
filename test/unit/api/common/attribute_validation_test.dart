@@ -348,7 +348,7 @@ void _attributeValueDataModelTests() {
     });
 
     test('a wrapped value nested in a map keeps its type', () {
-      final bytes = AnyValueBytes([1, 2]);
+      final bytes = AnyValue.fromBytes([1, 2]) as AnyValueBytes;
       final attrs = Attributes.of({
         'wrapper': {'payload': bytes, 'n': const AnyValueInt(7)},
       });

@@ -10,6 +10,9 @@ import 'package:dartastic_opentelemetry_api/src/api/common/attributes.dart';
 import 'package:dartastic_opentelemetry_api/src/api/otel_api.dart';
 import 'package:test/test.dart';
 
+AnyValueBytes _bytes(List<int> value) =>
+    AnyValue.fromBytes(value) as AnyValueBytes;
+
 void main() {
   group('attribute', () {
     setUp(() {
@@ -150,7 +153,7 @@ void main() {
 
       test('toJson returns raw bytes when nested too', () {
         final value = AnyValueMap({
-          'payload': AnyValueBytes([1, 2, 3])
+          'payload': _bytes([1, 2, 3])
         });
         expect(
             value.toJson(),
@@ -161,7 +164,7 @@ void main() {
 
       test('unwrap returns raw bytes at every nesting depth', () {
         final map = AnyValueMap({
-          'payload': AnyValueBytes([1, 2, 3])
+          'payload': _bytes([1, 2, 3])
         });
         expect(
             map.unwrap(),
@@ -170,7 +173,7 @@ void main() {
             }));
 
         final array = AnyValueArray([
-          AnyValueBytes([1, 2, 3]),
+          _bytes([1, 2, 3]),
         ]);
         expect(
             array.unwrap(),
@@ -180,7 +183,7 @@ void main() {
 
         final nested = AnyValueArray([
           AnyValueMap({
-            'payload': AnyValueBytes([1, 2, 3])
+            'payload': _bytes([1, 2, 3])
           }),
         ]);
         expect(
@@ -190,15 +193,6 @@ void main() {
                 'payload': [1, 2, 3],
               },
             ]));
-      });
-
-      test('an out-of-range positive element is rejected, not masked', () {
-        // Uint8List.fromList would silently store 44 here.
-        expect(() => AnyValueBytes([1, 300]), throwsA(isA<ArgumentError>()));
-      });
-
-      test('a negative element is rejected by constructor', () {
-        expect(() => AnyValueBytes([-1]), throwsA(isA<ArgumentError>()));
       });
 
       test(
@@ -219,13 +213,32 @@ void main() {
         expect(reported.last, isA<ArgumentError>());
       });
 
+      test('fromBytes reports an unreadable list and returns AnyValueNull', () {
+        final reported = <Object>[];
+        OTelAPI.setErrorHandler((error, _) => reported.add(error));
+        addTearDown(() => OTelAPI.setErrorHandler(null));
+
+        final result = AnyValue.fromBytes(_ThrowingByteList());
+
+        expect(result, isA<AnyValueNull>());
+        expect(reported, hasLength(1));
+        expect(reported.single, isA<ArgumentError>());
+      });
+
+      test('fromBytes copies the same values it validates', () {
+        final result = AnyValue.fromBytes(_ChangingByteList());
+
+        expect(result, isA<AnyValueBytes>());
+        expect(result.unwrap(), equals([1]));
+      });
+
       test('the boundary values 0 and 255 are accepted', () {
-        expect(AnyValueBytes([0, 255]).value, equals([0, 255]));
+        expect(_bytes([0, 255]).value, equals([0, 255]));
         expect(AnyValue.fromBytes([0, 255]), isA<AnyValueBytes>());
       });
 
-      test('a Uint8List is accepted without scanning', () {
-        final value = AnyValueBytes(Uint8List.fromList([0, 128, 255]));
+      test('a Uint8List is accepted', () {
+        final value = _bytes(Uint8List.fromList([0, 128, 255]));
         expect(value.value, equals([0, 128, 255]));
         final fromBytesVal =
             AnyValue.fromBytes(Uint8List.fromList([0, 128, 255]));
@@ -234,8 +247,8 @@ void main() {
 
       // An out-of-range list cannot reach AnyValueBytes through Attributes.of:
       // a plain List<int> converts via the array branch, and a Uint8List is in
-      // range by construction. Bytes only arrive out of range via the explicit
-      // bytes constructor or factory, which throw (above).
+      // range by construction. Explicit byte creation validates through
+      // AnyValue.fromBytes.
       test('Attributes.of routes an out-of-range int list to an array', () {
         final attrs = Attributes.of({
           'nums': <int>[999, 1000],
@@ -283,7 +296,7 @@ void main() {
 
       test('AnyValueBytes copies the caller list and is unmodifiable', () {
         final source = <int>[1, 2];
-        final value = AnyValueBytes(source);
+        final value = _bytes(source);
         final hashBefore = value.hashCode;
 
         source.add(3);
@@ -435,7 +448,7 @@ void main() {
       });
 
       test('toString renders bytes as a length, not their contents', () {
-        final big = AnyValueBytes(List<int>.filled(1000000, 7));
+        final big = _bytes(List<int>.filled(1000000, 7));
         final rendered = big.toString();
 
         expect(rendered, equals('<1000000 bytes>'));
@@ -445,7 +458,7 @@ void main() {
 
       test('nested bytes also render as a length', () {
         final value = AnyValueMap({
-          'payload': AnyValueBytes([1, 2, 3]),
+          'payload': _bytes([1, 2, 3]),
         });
         expect(value.toString(), equals('{payload: <3 bytes>}'));
       });
@@ -896,6 +909,38 @@ class _ThrowingIterable extends Iterable<int> {
 
   @override
   String toString() => throw StateError('toString error');
+}
+
+class _ThrowingByteList extends ListBase<int> {
+  @override
+  int get length => throw StateError('length error');
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  int operator [](int index) => throw StateError('index error');
+
+  @override
+  void operator []=(int index, int value) =>
+      throw UnsupportedError('read only');
+}
+
+class _ChangingByteList extends ListBase<int> {
+  var _reads = 0;
+
+  @override
+  int get length => 1;
+
+  @override
+  set length(int value) => throw UnsupportedError('read only');
+
+  @override
+  int operator [](int index) => _reads++ == 0 ? 1 : 300;
+
+  @override
+  void operator []=(int index, int value) =>
+      throw UnsupportedError('read only');
 }
 
 class _ThrowingMap extends MapBase<String, Object?> {

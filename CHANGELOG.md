@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (symbolic name), and other objects via `toString()`. Collection cycles and
   depth past 32 levels yield `AnyValueNull` and report via `OTelErrorHandling`,
   with `unwrap()` not re-reporting at the depth placeholder. `AnyValue.fromBytes`
-  validates 0-255 bytes and reports on invalid input instead of throwing.
+  is the byte-value entry point; it validates 0-255 bytes and reports invalid
+  or unreadable input instead of exposing a throwing subtype constructor.
   Typed `Attributes` getters return null quietly for `AnyValueNull`
   ([#123](https://github.com/MindfulSoftwareLLC/dartastic_opentelemetry_api/pull/123)).
 

@@ -113,18 +113,40 @@ sealed class AnyValue {
   /// Creates an AnyValue from a byte array.
   ///
   /// Every element must be in the range 0-255. If an element is out of range,
-  /// the error is reported via [OTelErrorHandling] and [AnyValueNull] is returned.
+  /// or the list cannot be read, the error is reported via [OTelErrorHandling]
+  /// and [AnyValueNull] is returned.
   factory AnyValue.fromBytes(List<int> value) {
-    if (value is! Uint8List) {
-      for (final byte in value) {
-        if (byte < 0 || byte > 255) {
-          OTelErrorHandling.report(ArgumentError(
-              'AnyValue.fromBytes elements must be in the range 0-255; using an empty value.'));
-          return const AnyValueNull();
+    var hasInvalidElement = false;
+    AnyValueBytes? result;
+    try {
+      if (value is Uint8List) {
+        result = AnyValueBytes._(value);
+      } else {
+        final validated = <int>[];
+        for (final byte in value) {
+          if (byte < 0 || byte > 255) {
+            hasInvalidElement = true;
+            break;
+          }
+          validated.add(byte);
+        }
+        if (!hasInvalidElement) {
+          // Copy from the values that were validated, rather than iterating a
+          // caller-defined List twice and allowing it to change between reads.
+          result = AnyValueBytes._(validated);
         }
       }
+    } catch (_) {
+      OTelErrorHandling.report(ArgumentError(
+          'AnyValue.fromBytes could not read the byte list; using an empty value.'));
+      return const AnyValueNull();
     }
-    return AnyValueBytes(value);
+    if (hasInvalidElement) {
+      OTelErrorHandling.report(ArgumentError(
+          'AnyValue.fromBytes elements must be in the range 0-255; using an empty value.'));
+      return const AnyValueNull();
+    }
+    return result!;
   }
 
   /// Creates the null AnyValue.
@@ -198,7 +220,7 @@ sealed class AnyValue {
     } else if (obj is Uint8List) {
       // Must precede the List check: Uint8List implements List<int>, so it
       // would otherwise become an array of AnyValueInt.
-      return AnyValueBytes(obj);
+      return AnyValueBytes._(obj);
     } else if (obj is Iterable) {
       if (!path.add(obj)) return _cycle();
       try {
@@ -407,35 +429,16 @@ class AnyValueMap extends AnyValue {
 class AnyValueBytes extends AnyValue {
   /// The wrapped bytes, which are unmodifiable.
   ///
-  /// Every element is in the range 0-255; the constructor rejects anything
-  /// else. Backed by a [Uint8List] rather than `List.unmodifiable`, which
+  /// Every element is in the range 0-255. Backed by a [Uint8List] rather than
+  /// `List.unmodifiable`, which
   /// would box every element: bytes carry blobs, so a 1 MB payload would
   /// otherwise become a million boxed ints.
   final List<int> value;
 
-  /// Creates an AnyValue holding a defensive, unmodifiable copy of [value].
-  ///
-  /// Throws an [ArgumentError] for an element outside 0-255. Intended for data
-  /// you already know is valid; use [AnyValue.fromBytes] for untrusted input,
-  /// which reports and returns [AnyValueNull].
-  AnyValueBytes(List<int> value) : value = _asBytes(value);
-
-  static List<int> _asBytes(List<int> value) {
-    // A Uint8List is in range by construction, and Uint8List.fromList is
-    // already an O(n) copy, so only an arbitrary List<int> needs scanning.
-    // Masking out-of-range values the way Uint8List does would silently
-    // corrupt an opaque payload, which is the behavior this package rejects
-    // for every other unsupported input.
-    if (value is! Uint8List) {
-      for (final byte in value) {
-        if (byte < 0 || byte > 255) {
-          throw ArgumentError.value(byte, 'value',
-              'AnyValueBytes elements must be in the range 0-255');
-        }
-      }
-    }
-    return UnmodifiableListView<int>(Uint8List.fromList(value));
-  }
+  // Byte construction is routed through AnyValue.fromBytes so invalid input
+  // can be reported and degraded without exposing a throwing constructor.
+  AnyValueBytes._(List<int> value)
+      : value = UnmodifiableListView<int>(Uint8List.fromList(value));
 
   // Deep hashing walks the whole payload, which for bytes may be large, and
   // this value is immutable, so compute it once on first use.
