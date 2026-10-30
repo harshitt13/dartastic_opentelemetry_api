@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Metric `addWithMap`, `recordWithMap`, and
+  `APIObservableResult.observeWithMap` now accept `Map<String, Object?>`,
+  allowing null attribute values through API-typed instruments and results.
+  SDK implementations and other overrides must accept the widened parameter
+  ([#123](https://github.com/MindfulSoftwareLLC/dartastic_opentelemetry_api/pull/123)).
 - **BREAKING**: `Attribute` is no longer generic. It is now a concrete
   `Attribute` carrying an `AnyValue` payload, so explicit type arguments
   must be removed (`Attribute<String>` becomes `Attribute`).
