@@ -31,8 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or log body type, per common.md. Subtypes are read via pattern matching or
   casts. Collections are unmodifiable and not const constructible.
   `AnyValue.fromObject` recursively maps primitives, `Uint8List` (as bytes),
-  `DateTime` (UTC ISO-8601 string), `Iterable`/`Set` (as arrays), `Enum`
-  (symbolic name), and other objects via `toString()`. Collection cycles and
+  `DateTime` (UTC ISO-8601 string), `Iterable`/`Set` (as arrays), and enums
+  and other objects via guarded `toString()`. Collection cycles and
   depth past 32 levels yield `AnyValueNull` and report via `OTelErrorHandling`,
   with `unwrap()` not re-reporting at the depth placeholder. `AnyValue.fromBytes`
   is the byte-value entry point; it validates 0-255 bytes and reports invalid
@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: `OTelAPI.attributesFromSemanticMap`, `attributesOf<E>`, and
+  `OTelSemanticExtension.toMapEntry` accept nullable values, consistent with
+  string-keyed attribute maps. Code requiring their map entries to have
+  non-nullable values must accept `Object?`
+  ([#123](https://github.com/MindfulSoftwareLLC/dartastic_opentelemetry_api/pull/123)).
 - **BREAKING**: Metric `addWithMap`, `recordWithMap`, and
   `APIObservableResult.observeWithMap` now accept `Map<String, Object?>`,
   allowing null attribute values through API-typed instruments and results.
@@ -86,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AnyValue collection conversion preserves exceptions from custom error
+  handlers instead of treating them as iteration failures. Depth truncation
+  reports once per conversion, and typed double lists retain their element
+  types on JavaScript compilers. Enum conversion preserves custom `toString()`
+  wire values, including semantic-convention values
+  ([#123](https://github.com/MindfulSoftwareLLC/dartastic_opentelemetry_api/pull/123)).
 - `Attributes.toString` falls back to `AnyValue.toString` rendering when JSON
   encoding fails on non-finite doubles (`NaN`, `Infinity`), never throwing
   ([#123](https://github.com/MindfulSoftwareLLC/dartastic_opentelemetry_api/pull/123)).

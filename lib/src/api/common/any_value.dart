@@ -21,6 +21,9 @@ sealed class AnyValue {
   // the deepest map such a backend can decode.
   static const int _maxDepth = 32;
 
+  // Stored in the per-conversion identity set to report a depth failure once.
+  static final Object _depthReported = Object();
+
   /// Const constructor for subclasses.
   const AnyValue();
 
@@ -172,13 +175,15 @@ sealed class AnyValue {
   ///   `toUtc().toIso8601String()`. The specification has no rule for dates,
   ///   so this is "Other Values" with a fixed format instead of
   ///   [DateTime.toString].
-  /// - An [Enum] becomes an [AnyValueString] using its symbolic name ([Enum.name]).
+  /// - Enums use `toString()`, preserving custom semantic-convention wire values.
   /// - An [AnyValue] is returned as is.
   /// - Anything else becomes a String via `toString()` ("Other Values"). If
   ///   `toString()` throws, the failure is reported through
   ///   [OTelErrorHandling] and the result is [AnyValueNull].
   ///
-  /// Never throws. Nesting deeper than 32 levels or cyclic collection
+  /// Reports failures without throwing under the default error handler. A
+  /// user-installed error handler may deliberately throw. Nesting deeper than
+  /// 32 levels (reported once per conversion) or cyclic collection
   /// references are reported through [OTelErrorHandling] and that subtree
   /// becomes [AnyValueNull].
   factory AnyValue.fromObject(Object? obj) =>
@@ -190,10 +195,13 @@ sealed class AnyValue {
     return const AnyValueNull();
   }
 
-  static AnyValue _fromObject(Object? obj, int depth, Set<Object> path) {
+  static AnyValue _fromObject(Object? obj, int depth, Set<Object> path,
+      {bool preserveDouble = false}) {
     if (depth >= _maxDepth) {
-      OTelErrorHandling.report(ArgumentError(
-          'AnyValue nesting exceeds the maximum depth of $_maxDepth'));
+      if (path.add(_depthReported)) {
+        OTelErrorHandling.report(ArgumentError(
+            'AnyValue nesting exceeds the maximum depth of $_maxDepth'));
+      }
       return const AnyValueNull();
     }
     // An AnyValue at any depth passes through; the fallback below would
@@ -212,7 +220,7 @@ sealed class AnyValue {
       // `2.0 is int` is true and a whole-valued double lands here. The VM and
       // dart2wasm keep them distinct. getDouble and getDoubleList promote an
       // int on read, so only `is AnyValueInt` differs between compilers.
-      return AnyValueInt(obj);
+      return preserveDouble ? AnyValueDouble(obj.toDouble()) : AnyValueInt(obj);
     } else if (obj is double) {
       return AnyValueDouble(obj);
     } else if (obj is DateTime) {
@@ -224,20 +232,37 @@ sealed class AnyValue {
     } else if (obj is Iterable) {
       if (!path.add(obj)) return _cycle();
       try {
-        return AnyValueArray(
-            obj.map((e) => _fromObject(e, depth + 1, path)).toList());
-      } catch (_) {
-        OTelErrorHandling.report(ArgumentError(
-            'Iteration threw while converting an Iterable to an AnyValue; using an empty value.'));
-        return const AnyValueNull();
+        final List<Object?> elements;
+        try {
+          elements = obj.toList();
+        } catch (_) {
+          OTelErrorHandling.report(ArgumentError(
+              'Iteration threw while converting an Iterable to an AnyValue; using an empty value.'));
+          return const AnyValueNull();
+        }
+        // A typed double list retains its element type even when a whole-valued
+        // double also satisfies `is int` on JavaScript compilers.
+        return AnyValueArray([
+          for (final element in elements)
+            _fromObject(element, depth + 1, path,
+                preserveDouble: obj is List<double>),
+        ]);
       } finally {
         path.remove(obj);
       }
     } else if (obj is Map) {
       if (!path.add(obj)) return _cycle();
       try {
+        final List<MapEntry<Object?, Object?>> entries;
+        try {
+          entries = obj.entries.toList();
+        } catch (_) {
+          OTelErrorHandling.report(ArgumentError(
+              'Iteration threw while converting a Map to an AnyValue; using an empty value.'));
+          return const AnyValueNull();
+        }
         final map = <String, AnyValue>{};
-        for (final entry in obj.entries) {
+        for (final entry in entries) {
           final keyObj = entry.key;
           final String key;
           if (keyObj is! String) {
@@ -259,15 +284,9 @@ sealed class AnyValue {
           map[key] = _fromObject(entry.value, depth + 1, path);
         }
         return AnyValueMap(map);
-      } catch (_) {
-        OTelErrorHandling.report(ArgumentError(
-            'Iteration threw while converting a Map to an AnyValue; using an empty value.'));
-        return const AnyValueNull();
       } finally {
         path.remove(obj);
       }
-    } else if (obj is Enum) {
-      return AnyValueString(obj.name);
     } else {
       // "Mapping Arbitrary Data to OTLP AnyValue", Other Values: anything not
       // listed above SHOULD be converted to a string via toString(), and to an

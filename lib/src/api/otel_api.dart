@@ -498,7 +498,7 @@ class OTelAPI {
   /// This converts each OTelSemantic key to its string representation and creates
   /// appropriate attribute values based on the value types.
   static Attributes attributesFromSemanticMap(
-      Map<OTelSemantic, Object> semanticMap) {
+      Map<OTelSemantic, Object?> semanticMap) {
     return attributesFromMap(
         semanticMap.map((key, value) => key.toMapEntry(value)));
   }
@@ -526,9 +526,9 @@ class OTelAPI {
   /// stays the right call site when you need to mix multiple semconv
   /// enums or your own [OTelSemantic]-implementing enums in one map.
   static Attributes attributesOf<E extends OTelSemantic>(
-    Map<E, Object> typedMap,
+    Map<E, Object?> typedMap,
   ) =>
-      attributesFromSemanticMap(typedMap.cast<OTelSemantic, Object>());
+      attributesFromSemanticMap(typedMap.cast<OTelSemantic, Object?>());
 
   /// Creates an `Attributes` collection from a named set of values.
   ///

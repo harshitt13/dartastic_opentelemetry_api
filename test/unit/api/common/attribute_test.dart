@@ -774,17 +774,17 @@ void main() {
       });
     });
 
-    group('Enum symbolic name conversion (Item 6)', () {
-      test('plain enum uses its symbolic name', () {
+    group('Enum string conversion', () {
+      test('plain enum preserves its toString representation', () {
         final result = AnyValue.fromObject(_PlainEnum.first);
         expect(result, isA<AnyValueString>());
-        expect((result as AnyValueString).value, equals('first'));
+        expect((result as AnyValueString).value, equals('_PlainEnum.first'));
       });
 
-      test('enhanced enum uses its symbolic name', () {
+      test('enhanced enum preserves its toString representation', () {
         final result = AnyValue.fromObject(_EnhancedEnum.alpha);
         expect(result, isA<AnyValueString>());
-        expect((result as AnyValueString).value, equals('alpha'));
+        expect((result as AnyValueString).value, equals('_EnhancedEnum.alpha'));
       });
 
       test('enum inside a list converts to AnyValueString', () {
@@ -792,7 +792,8 @@ void main() {
         expect(result, isA<AnyValueArray>());
         final arr = result as AnyValueArray;
         expect(arr.value.first, isA<AnyValueString>());
-        expect((arr.value.first as AnyValueString).value, equals('second'));
+        expect((arr.value.first as AnyValueString).value,
+            equals('_PlainEnum.second'));
       });
 
       test('enum inside a map converts to AnyValueString', () {
@@ -800,7 +801,8 @@ void main() {
         expect(result, isA<AnyValueMap>());
         final map = result as AnyValueMap;
         expect(map.value['e'], isA<AnyValueString>());
-        expect((map.value['e'] as AnyValueString).value, equals('beta'));
+        expect((map.value['e'] as AnyValueString).value,
+            equals('_EnhancedEnum.beta'));
       });
     });
 
