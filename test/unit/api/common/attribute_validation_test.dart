@@ -71,6 +71,13 @@ void main() {
       expect(attrs.getStringList('names'), equals(['', 'b']));
     });
 
+    test('Attributes.of converts untyped string lists', () {
+      final attrs = Attributes.of({
+        'names': <Object>['a', 'b']
+      });
+      expect(attrs.getStringList('names'), equals(['a', 'b']));
+    });
+
     test('Attributes.of converts untyped bool lists', () {
       final attrs = Attributes.of({
         'flags': <Object>[true, false]
